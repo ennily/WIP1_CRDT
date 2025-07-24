@@ -34,6 +34,8 @@ typedef struct {
     pthread_mutex_t lock;           // 共有データ保護
 } GCounter;
 
+
+
 // -------------------- ユーティリティ関数 --------------------
 unsigned long gc_total(GCounter *gc) {
     unsigned long sum = 0;
@@ -49,26 +51,27 @@ void gc_increment(GCounter *gc, unsigned long delta) {
     pthread_mutex_unlock(&gc->lock);
 }
 
-// incoming="id1=value1,id2=value2,..."
+/* merge処理：incoming="id1=value1,id2=value2,..." */
 void gc_merge_str(GCounter *gc, const char *incoming) {
-    pthread_mutex_lock(&gc->lock);
+    pthread_mutex_lock(&gc->lock); /*ロックをとる*/
     char tmp[BUF_SIZE];
-    strncpy(tmp, incoming, sizeof(tmp) - 1);
-    tmp[sizeof(tmp) - 1] = '\0';
+    strncpy(tmp, incoming, sizeof(tmp) - 1); /*incoming[]から最大sizeof(tmp) - 1分をtmp[]にコピーする*/
+    tmp[sizeof(tmp) - 1] = '\0'; /*コピーした最後の文字を終端文字にする*/
 
-    char *token = strtok(tmp, ",");
+    char *token = strtok(tmp, ","); /* strtokで、tmp[]の中の文字列を,ごとに区切ってtoken返す */
     while (token) {
         int id;
         unsigned long val;
-        if (sscanf(token, "%d=%lu", &id, &val) == 2 && id >= 0 && id < MAX_REPLICAS) {
-            if (val > gc->values[id]) {
-                gc->values[id] = val; // 要素毎の max を取る
+        if (sscanf(token, "%d=%lu", &id, &val) == 2 && id >= 0 && id < MAX_REPLICAS) { /*token内のそれぞれのidとvalが適切な値なら*/
+            if (val > gc->values[id]) { /*受け取った値の方が大きければ、*/
+                gc->values[id] = val; /*各レプリカのカウンタ値を置き換える*/
             }
         }
         token = strtok(NULL, ",");
     }
     pthread_mutex_unlock(&gc->lock);
 }
+
 
 // 自身の状態を文字列化 → "id=val,id=val,..."
 size_t gc_serialize(GCounter *gc, char *out, size_t out_size) {
@@ -112,6 +115,9 @@ void *receiver_thread(void *arg) {
         printf("[Recv] %s\n", buf);
         printf("  → total=%lu\n", gc_total(args->gc));
     }
+
+    /*通信を定期的にオンオフする*/
+
     return NULL;
 }
 
@@ -132,17 +138,21 @@ int main(int argc, char *argv[]) {
     int listen_port = atoi(argv[2]);
 
     // --- ソケット作成 & バインド (UDP) ---
+
+    /*ソケットを生成*/
     int sockfd = socket(AF_INET, SOCK_DGRAM, 0);
     if (sockfd < 0) {
         perror("socket");
         return 1;
     }
 
+    /*ソケットの設定を作成*/
     struct sockaddr_in addr = {0};
     addr.sin_family = AF_INET;
-    addr.sin_addr.s_addr = INADDR_ANY;
-    addr.sin_port = htons((unsigned short)listen_port);
+    addr.sin_addr.s_addr = INADDR_ANY; /*自分のIPアドレスを決める*/
+    addr.sin_port = htons((unsigned short)listen_port); /*自分のポート番号を決める*/
 
+    /*ソケットに設定を適用(bind)*/
     if (bind(sockfd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
         perror("bind");
         close(sockfd);
@@ -150,9 +160,8 @@ int main(int argc, char *argv[]) {
     }
 
     // --- G‑Counter 初期化 ---
-    GCounter gc = {0};
+    GCounter gc = {0}; /*構造体の全部の変数を０で初期化*/
     gc.replica_id = replica_id;
-    memset(gc.values, 0, sizeof(gc.values));
     pthread_mutex_init(&gc.lock, NULL);
 
     // --- Peer アドレス一覧を保存 ---
@@ -191,8 +200,9 @@ int main(int argc, char *argv[]) {
     // --- メインループ: 入力受付 & 定期ブロードキャスト ---
     char line[128];
     time_t last_broadcast = 0;
+    uint i = 0;
 
-    while (1) {
+    while (1) { /*無限ループ*/
         // 標準入力があれば処理
         if (fgets(line, sizeof(line), stdin)) {
             unsigned long delta = strtoul(line, NULL, 10);
@@ -208,12 +218,11 @@ int main(int argc, char *argv[]) {
             char msg[BUF_SIZE];
             gc_serialize(&gc, msg, sizeof(msg));
             for (int i = 0; i < peer_count; ++i) {
-                sendto(sockfd, msg, strlen(msg), 0, (struct sockaddr *)&peers[i], sizeof(peers[i]));
+                sendto(sockfd, msg, strlen(msg), 0, (struct sockaddr *)&peers[i], sizeof(peers[i])); /*sockfd：自分のソケット*/
             }
             last_broadcast = now;
         }
 
-        usleep(100000); // 0.1 秒スリープ
     }
 
     // never reached
