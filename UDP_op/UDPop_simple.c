@@ -30,7 +30,9 @@ void gc_increment(GCounter *gc, unsigned long delta) {
 
 /*merge処理*/
 void gc_merge_str(GCounter *gc, unsigned long *incoming) {
+    pthread_mutex_lock(&gc->lock);
     gc->value += *incoming;
+    pthread_mutex_unlock(&gc->lock);
 }
 
 
@@ -44,14 +46,17 @@ typedef struct {
 
 void *receiver_thread(void *arg) {
     ReceiverArgs *args = (ReceiverArgs *)arg;
-    unsigned long buf; /*受け取ったmsgをbufに突っ込む*/
+    char buf[BUF_SIZE] = {0};
+    unsigned long ulbuf; /*受け取ったmsgをbufに突っ込む*/
 
     while (1) {
-        ssize_t len = recvfrom(args->sockfd, buf, sizeof(buf) - 1, 0, NULL, NULL);
+        ssize_t len = recvfrom(args->sockfd, buf, sizeof(buf), 0, NULL, NULL);
         if (len <= 0) continue; 
-        gc_merge_str(args->gc, buf); /*gc_merge_str関数でマージ処理を行う*/
-        printf("[Recv] %s\n", buf);
-        printf("  → total=%lu\n", gc->value);
+        // TODO: bufを数字に変換
+        ulbuf = atoi(buf);
+        gc_merge_str(args->gc, &ulbuf); /*gc_merge_str関数でマージ処理を行う*/
+        printf("[Recv] %lu\n", ulbuf);
+        printf("  → total=%lu\n", args->gc->value);
     }
 
     return NULL;
@@ -147,7 +152,6 @@ int main(int argc, char *argv[]) { /*arg[]はプログラム実行時に入力�
     /*メインスレッド*/
     char line[128];
     time_t last_broadcast = 0;
-    uint i = 0;
 
     while (1) { /*無限ループ*/
         // 標準入力があれば自プロセス内で処理
@@ -155,18 +159,20 @@ int main(int argc, char *argv[]) { /*arg[]はプログラム実行時に入力�
             unsigned long delta = strtoul(line, NULL, 10); /*文字列→符号なし長整数でdeltaに格納。*/
             if (delta > 0) {
                 gc_increment(&gc, delta); /*gc_increment関数呼び出して自分のvalueにdelta付け足す*/
-                printf("[Local] +%lu (total=%lu)\n", delta, gc->value);
+                printf("[Local] +%lu (total=%lu)\n", delta, gc.value);
             }
-            gc->msg += delta; /*msgにdeltaを追加*/
+            gc.msg += delta; /*msgにdeltaを追加*/
         }
 
         // 一定間隔で状態をブロードキャスト
         time_t now = time(NULL); /*現時間をnowに格納*/
         if (now - last_broadcast >= BROADCAST_INTERVAL_SEC) { /*最後にブロードキャストしてからINTERVAL_SECがすぎたら、*/
+            char msg[BUF_SIZE];
             for (int i = 0; i < peer_count; ++i) {
+                snprintf(msg, BUF_SIZE, "%lu", gc.msg);
                 sendto(sockfd, msg, strlen(msg), 0, (struct sockaddr *)&peers[i], sizeof(peers[i])); /*sockfd：自分のソケット。msgを送信*/
-                msg = 0; /*msgを初期化*/
             }
+            gc.msg = 0; /*msgを初期化*/
             last_broadcast = now;
         }
 
